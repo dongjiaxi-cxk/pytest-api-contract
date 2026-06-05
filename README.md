@@ -1,32 +1,38 @@
 # pytest-api-contract
 
-[![tests](https://github.com/dongjiaxi-cxk/pytest-api-contract/actions/workflows/tests.yml/badge.svg)](https://github.com/dongjiaxi-cxk/pytest-api-contract/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![pytest](https://img.shields.io/badge/pytest-plugin-orange.svg)](https://docs.pytest.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen.svg)](tests/)
+[![PyPI](https://img.shields.io/badge/pypi-v0.3.0-blue.svg)](https://pypi.org/project/pytest-api-contract/)
 
-pytest plugin that turns an OpenAPI 3.x spec into parametrized API contract tests.
-
-## How it works
-
-- Reads an OpenAPI 3.x spec (YAML or JSON)
-- Auto-generates one test case per endpoint (method + path + params + body)
-- Parametrizes your test function so pytest runs each endpoint as a separate case
-- Validates status codes, response time, Content-Type, and JSON Schema
-
-## Install
+**pytest plugin for API contract testing.** Point it at an OpenAPI 3.x spec, and pytest auto-generates parametrized test cases for every endpoint.
 
 ```bash
-pip install git+https://github.com/dongjiaxi-cxk/pytest-api-contract.git
+pytest --contract-spec openapi.yaml -v
 ```
 
-Or locally:
+```
+test_api.py::test_endpoint[GET /users] PASSED
+test_api.py::test_endpoint[POST /users] PASSED
+test_api.py::test_endpoint[GET /users/{userId}] PASSED
+```
+
+## Why this exists
+
+Most API testing tools are standalone CLIs. This one integrates directly into pytest — your existing test runner. Benefits:
+- **Zero learning curve** for pytest users
+- **CI-native** — runs anywhere pytest runs
+- **Parametrized** — one test function, N test cases (one per endpoint)
+- **Assertions** — status code, schema, response time, JSONPath, snapshots
+
+## Quick Start
 
 ```bash
-pip install -e .
+pip install pytest-api-contract
 ```
 
-## Usage
-
-Write a test file that accepts the `contract_case` fixture:
-
+Write a test file:
 ```python
 # test_api.py
 def test_api_endpoint(contract_case):
@@ -34,53 +40,80 @@ def test_api_endpoint(contract_case):
     assert result["passed"], "\n".join(result.get("messages", []))
 ```
 
-Run with your OpenAPI spec:
-
+Run:
 ```bash
 pytest test_api.py --contract-spec openapi.yaml -v
 ```
 
-Output:
+## Features
 
-```
-test_api.py::test_api_endpoint[GET /users] PASSED
-test_api.py::test_api_endpoint[POST /users] PASSED
-test_api.py::test_api_endpoint[GET /users/{userId}] PASSED
-```
+| Feature | Flag | Description |
+|---------|------|-------------|
+| OpenAPI 3.x | `--contract-spec` | YAML/JSON spec file |
+| Auth | `--contract-auth` | `"Bearer: $TOKEN"` auto-resolved from env |
+| Filter | `--contract-filter` | `"GET:/users*"` or `"POST"` |
+| SSL | `--contract-skip-ssl` | Disable certificate verification |
+| Headers | `--contract-header` | Custom headers (repeatable) |
+| Performance | `--contract-max-response-ms` | Fail if response exceeds N ms |
+| JSONPath | `--contract-assert-jsonpath` | `"$.status:success"` |
+| Snapshot | `--contract-snapshot-dir` | Save/compare response snapshots |
+| Base URL | `--contract-base-url` | Override spec server URL |
 
-## Options
-
-| Option | Description |
-|--------|-------------|
-| `--contract-spec PATH` | Path to OpenAPI 3.x spec (YAML/JSON) |
-| `--contract-base-url URL` | Override the base URL from spec |
-
-## Example
-
-See `examples/petstore.py` and `examples/petstore.yaml` for a real-world example against the Swagger Petstore API.
+## Advanced Usage
 
 ```bash
-pytest examples/test_petstore.py --contract-spec examples/petstore.yaml -v
+pytest test_api.py \
+  --contract-spec openapi.yaml \
+  --contract-auth "Bearer: $API_TOKEN" \
+  --contract-header "X-Region: us-east" \
+  --contract-filter "GET:/users*" \
+  --contract-max-response-ms 500 \
+  --contract-assert-jsonpath "$.status:success" \
+  --contract-snapshot-dir ./snapshots \
+  --contract-skip-ssl \
+  -v
 ```
 
-## Project structure
+## How It Works
+
+```
+OpenAPI Spec
+     |
+     v
+SpecLoader  -->  parses YAML/JSON, resolves ${ENV_VARS}
+     |
+     v
+TestGenerator --> creates TestCase objects (method, path, params, body, schema)
+     |
+     v
+pytest_generate_tests --> parametrizes "contract_case" fixture
+     |
+     v
+Your test function receives each TestCase
+     |
+     v
+TestCase.execute() --> HTTP request + status/schema/time/JSONPath/snapshot validation
+```
+
+## Project Structure
 
 ```
 pytest-api-contract/
   src/pytest_api_contract/
-    __init__.py
-    plugin.py          # pytest hooks: addoption, configure, generate_tests
-    spec_loader.py     # OpenAPI 3.x parser
-    test_generator.py  # TestCase dataclass + generator
-  tests/
-    fixtures/
-      test_api.yaml    # test fixture spec
-    test_spec_loader.py
-    test_test_generator.py
-    test_plugin.py     # integration tests (subprocess)
+    plugin.py          # pytest hooks + JSONPath resolver + snapshot engine
+    spec_loader.py     # OpenAPI 3.x parser with env var support
+    test_generator.py  # TestCase dataclass with execute() method
+  tests/               # 45 pytest tests (unit + integration via subprocess)
   examples/
-    petstore.yaml
-    test_petstore.py
+    petstore.yaml      # Real-world example spec
+    test_petstore.py   # Real-world test file
+```
+
+## Running Tests
+
+```bash
+pip install -e .
+pytest tests/ -v
 ```
 
 ## License
