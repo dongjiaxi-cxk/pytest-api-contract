@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytest-api-contract"
+version = "0.1.0"
+description = "pytest plugin for automated API contract testing from OpenAPI specs"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=7.0",
+    "requests",
+    "pyyaml",
+    "jsonschema",
+]
+
+[project.entry-points.pytest11]
+pytest-api-contract = "pytest_api_contract.plugin"
+
+[tool.setuptools.package-dir]
+"pytest_api_contract" = "src/pytest_api_contract"
+
+[tool.setuptools.packages.find]
+where = ["src"]

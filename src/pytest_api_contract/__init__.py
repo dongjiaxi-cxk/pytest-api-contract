@@ -1,0 +1,1 @@
+"""pytest-api-contract - pytest plugin for API contract testing."""

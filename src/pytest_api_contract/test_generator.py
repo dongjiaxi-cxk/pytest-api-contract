@@ -1,0 +1,192 @@
+"""Generate test cases from OpenAPI endpoint definitions."""
+
+from dataclasses import dataclass, field
+
+import requests
+import jsonschema
+
+
+@dataclass
+class TestCase:
+    """A single API test case that can execute itself."""
+
+    name: str
+    method: str
+    path: str
+    base_url: str
+    params: dict = field(default_factory=dict)
+    headers: dict = field(default_factory=dict)
+    path_params: dict = field(default_factory=dict)
+    body: dict | None = None
+    expected_status: int = 200
+    expected_content_type: str = ""
+    response_schema: dict | None = None
+
+    def execute(self, timeout: int = 10) -> dict:
+        """Run this test case and return a result dict with passed/messages."""
+        # Replace path parameters
+        resolved_path = self.path
+        for key, value in self.path_params.items():
+            resolved_path = resolved_path.replace("{" + key + "}", str(value))
+
+        url = self.base_url.rstrip("/") + resolved_path
+        result = {
+            "name": self.name,
+            "passed": False,
+            "status_code": None,
+            "response_time_ms": 0,
+            "error": None,
+            "messages": [],
+        }
+
+        try:
+            response = requests.request(
+                method=self.method,
+                url=url,
+                params=self.params,
+                json=self.body,
+                headers=self.headers,
+                timeout=timeout,
+            )
+            result["status_code"] = response.status_code
+            result["response_time_ms"] = round(response.elapsed.total_seconds() * 1000)
+
+            # Validate status
+            if response.status_code == self.expected_status:
+                result["messages"].append("[PASS] Status: {} (expected {})".format(
+                    response.status_code, self.expected_status))
+            else:
+                result["messages"].append("[FAIL] Status: {} (expected {})".format(
+                    response.status_code, self.expected_status))
+
+            # Validate response time
+            if result["response_time_ms"] > 2000:
+                result["messages"].append(
+                    "[WARN] Slow response: {}ms".format(result["response_time_ms"]))
+            else:
+                result["messages"].append(
+                    "[PASS] Response time: {}ms".format(result["response_time_ms"]))
+
+            # Validate Content-Type
+            if self.expected_content_type:
+                ct = response.headers.get("Content-Type", "")
+                if self.expected_content_type in ct:
+                    result["messages"].append("[PASS] Content-Type: " + ct)
+                else:
+                    result["messages"].append("[FAIL] Content-Type: " + ct)
+
+            # Validate response schema
+            if self.response_schema:
+                try:
+                    body = response.json()
+                    jsonschema.validate(instance=body, schema=self.response_schema)
+                    result["messages"].append("[PASS] Response body matches schema")
+                except jsonschema.ValidationError as e:
+                    result["messages"].append(
+                        "[FAIL] Schema: " + str(e.message)[:100])
+                except ValueError:
+                    result["messages"].append("[WARN] Not valid JSON, schema check skipped")
+
+            # Determine pass/fail
+            failures = [m for m in result["messages"] if m.startswith("[FAIL]")]
+            result["passed"] = len(failures) == 0
+
+        except requests.exceptions.Timeout:
+            result["error"] = "Request timed out"
+            result["messages"].append("[FAIL] " + result["error"])
+        except requests.exceptions.ConnectionError:
+            result["error"] = "Connection failed"
+            result["messages"].append("[FAIL] " + result["error"])
+        except requests.exceptions.RequestException as e:
+            result["error"] = str(e)
+            result["messages"].append("[FAIL] " + str(e))
+
+        return result
+
+
+class TestGenerator:
+    """Generates test cases from OpenAPI spec endpoints."""
+
+    def __init__(self, base_url: str, endpoints: list):
+        self.base_url = base_url.rstrip("/")
+        self.endpoints = endpoints
+
+    def generate(self) -> list[TestCase]:
+        test_cases = []
+
+        for endpoint in self.endpoints:
+            method = endpoint["method"]
+            path = endpoint["path"]
+            operation_id = endpoint["operation_id"] or f"{method}{path}"
+
+            # Expected status and response schema
+            expected_status = 200
+            response_schema = None
+            responses = endpoint.get("responses", {})
+            for status_code in responses:
+                if status_code.startswith("2"):
+                    expected_status = int(status_code)
+                    response = responses[status_code]
+                    content = response.get("content", {})
+                    json_content = content.get("application/json", {})
+                    response_schema = json_content.get("schema")
+                    break
+
+            # Query and path params
+            params = {}
+            path_params = {}
+            for param in endpoint.get("parameters", []):
+                if param.get("in") == "query" and param.get("required"):
+                    params[param["name"]] = self._sample_value(param)
+                elif param.get("in") == "path":
+                    path_params[param["name"]] = self._sample_value(param)
+
+            # Request body for POST/PUT/PATCH
+            body = None
+            request_body = endpoint.get("request_body")
+            if request_body and method in ("POST", "PUT", "PATCH"):
+                content = request_body.get("content", {})
+                if "application/json" in content:
+                    schema = content["application/json"].get("schema", {})
+                    body = self._generate_body(schema)
+
+            test_cases.append(TestCase(
+                name=operation_id,
+                method=method,
+                path=path,
+                base_url=self.base_url,
+                params=params,
+                path_params=path_params,
+                body=body,
+                expected_status=expected_status,
+                response_schema=response_schema,
+            ))
+
+        return test_cases
+
+    def _sample_value(self, param: dict):
+        schema = param.get("schema", {})
+        stype = schema.get("type", "string")
+        if stype == "integer":
+            return 1
+        elif stype == "boolean":
+            return "true"
+        return "sample"
+
+    def _generate_body(self, schema: dict) -> dict:
+        if not schema or "properties" not in schema:
+            return {}
+
+        body = {}
+        required_fields = schema.get("required", [])
+        for field_name in required_fields:
+            prop = schema["properties"].get(field_name, {})
+            ptype = prop.get("type", "string")
+            if ptype == "integer":
+                body[field_name] = 1
+            elif ptype == "string":
+                body[field_name] = f"sample_{field_name}"
+            elif ptype == "boolean":
+                body[field_name] = False
+
+        return body
