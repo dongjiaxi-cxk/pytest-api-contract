@@ -4,6 +4,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+import os
+import re
 import requests
 import jsonschema
 
@@ -116,6 +118,45 @@ class TestCase:
                         "[FAIL] Schema: " + str(e.message)[:100])
                 except ValueError:
                     result["messages"].append("[WARN] Not valid JSON, schema check skipped")
+
+            # 5. Max response time threshold
+            max_ms = getattr(self, "_max_response_ms", None)
+            if max_ms and result["response_time_ms"] > max_ms:
+                result["messages"].append(
+                    "[FAIL] Response time: {}ms > {}ms threshold".format(
+                        result["response_time_ms"], max_ms))
+
+            # 6. JSONPath assertions
+            jsonpath_asserts = getattr(self, "_jsonpath_asserts", [])
+            if jsonpath_asserts:
+                try:
+                    body = response.json()
+                    for jp_path, jp_expected in jsonpath_asserts:
+                        from .plugin import _resolve_jsonpath
+                        actual = _resolve_jsonpath(body, jp_path)
+                        actual_str = str(actual)
+                        if jp_expected in actual_str or jp_expected == actual_str:
+                            result["messages"].append(
+                                "[PASS] JSONPath {} = {}".format(jp_path, actual_str)[:80])
+                        else:
+                            result["messages"].append(
+                                "[FAIL] JSONPath {} expected '{}', got '{}'".format(
+                                    jp_path, jp_expected, actual_str)[:120])
+                except ValueError:
+                    result["messages"].append("[WARN] Not valid JSON, JSONPath check skipped")
+
+            # 7. Snapshot testing
+            snap_dir = getattr(self, "_snapshot_dir", None)
+            if snap_dir:
+                try:
+                    body = response.json()
+                    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", self.name)
+                    snap_path = os.path.join(snap_dir, safe_name + ".json")
+                    from .plugin import _snapshot_test
+                    snap_ok, snap_msg = _snapshot_test(body, snap_path)
+                    result["messages"].append(snap_msg)
+                except ValueError:
+                    result["messages"].append("[WARN] Not valid JSON, snapshot skipped")
 
             failures = [m for m in result["messages"] if m.startswith("[FAIL]")]
             result["passed"] = len(failures) == 0
