@@ -1,9 +1,42 @@
 """Generate test cases from OpenAPI endpoint definitions."""
 
+import os
+import re
 from dataclasses import dataclass, field
 
 import requests
 import jsonschema
+
+
+_ENV_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+
+def resolve_env(value: str) -> str:
+    """Replace ${VAR} or $VAR with environment variable values."""
+    def _replacer(m):
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name, "")
+
+    return _ENV_RE.sub(_replacer, value)
+
+
+def resolve_env_in_dict(data: dict) -> dict:
+    """Recursively resolve env vars in dict values."""
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            result[key] = resolve_env(value)
+        elif isinstance(value, dict):
+            result[key] = resolve_env_in_dict(value)
+        elif isinstance(value, list):
+            result[key] = [
+                resolve_env_in_dict(item) if isinstance(item, dict) else
+                resolve_env(item) if isinstance(item, str) else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    return result
 
 
 @dataclass
@@ -21,10 +54,10 @@ class TestCase:
     expected_status: int = 200
     expected_content_type: str = ""
     response_schema: dict | None = None
+    verify_ssl: bool = True
 
     def execute(self, timeout: int = 10) -> dict:
         """Run this test case and return a result dict with passed/messages."""
-        # Replace path parameters
         resolved_path = self.path
         for key, value in self.path_params.items():
             resolved_path = resolved_path.replace("{" + key + "}", str(value))
@@ -47,11 +80,11 @@ class TestCase:
                 json=self.body,
                 headers=self.headers,
                 timeout=timeout,
+                verify=self.verify_ssl,
             )
             result["status_code"] = response.status_code
             result["response_time_ms"] = round(response.elapsed.total_seconds() * 1000)
 
-            # Validate status
             if response.status_code == self.expected_status:
                 result["messages"].append("[PASS] Status: {} (expected {})".format(
                     response.status_code, self.expected_status))
@@ -59,7 +92,6 @@ class TestCase:
                 result["messages"].append("[FAIL] Status: {} (expected {})".format(
                     response.status_code, self.expected_status))
 
-            # Validate response time
             if result["response_time_ms"] > 2000:
                 result["messages"].append(
                     "[WARN] Slow response: {}ms".format(result["response_time_ms"]))
@@ -67,7 +99,6 @@ class TestCase:
                 result["messages"].append(
                     "[PASS] Response time: {}ms".format(result["response_time_ms"]))
 
-            # Validate Content-Type
             if self.expected_content_type:
                 ct = response.headers.get("Content-Type", "")
                 if self.expected_content_type in ct:
@@ -75,7 +106,6 @@ class TestCase:
                 else:
                     result["messages"].append("[FAIL] Content-Type: " + ct)
 
-            # Validate response schema
             if self.response_schema:
                 try:
                     body = response.json()
@@ -87,7 +117,6 @@ class TestCase:
                 except ValueError:
                     result["messages"].append("[WARN] Not valid JSON, schema check skipped")
 
-            # Determine pass/fail
             failures = [m for m in result["messages"] if m.startswith("[FAIL]")]
             result["passed"] = len(failures) == 0
 
@@ -107,9 +136,10 @@ class TestCase:
 class TestGenerator:
     """Generates test cases from OpenAPI spec endpoints."""
 
-    def __init__(self, base_url: str, endpoints: list):
+    def __init__(self, base_url: str, endpoints: list, default_headers: dict | None = None):
         self.base_url = base_url.rstrip("/")
         self.endpoints = endpoints
+        self.default_headers = default_headers or {}
 
     def generate(self) -> list[TestCase]:
         test_cases = []
@@ -119,7 +149,6 @@ class TestGenerator:
             path = endpoint["path"]
             operation_id = endpoint["operation_id"] or f"{method}{path}"
 
-            # Expected status and response schema
             expected_status = 200
             response_schema = None
             responses = endpoint.get("responses", {})
@@ -132,7 +161,6 @@ class TestGenerator:
                     response_schema = json_content.get("schema")
                     break
 
-            # Query and path params
             params = {}
             path_params = {}
             for param in endpoint.get("parameters", []):
@@ -141,7 +169,6 @@ class TestGenerator:
                 elif param.get("in") == "path":
                     path_params[param["name"]] = self._sample_value(param)
 
-            # Request body for POST/PUT/PATCH
             body = None
             request_body = endpoint.get("request_body")
             if request_body and method in ("POST", "PUT", "PATCH"):
@@ -158,6 +185,7 @@ class TestGenerator:
                 params=params,
                 path_params=path_params,
                 body=body,
+                headers=dict(self.default_headers),
                 expected_status=expected_status,
                 response_schema=response_schema,
             ))
