@@ -1,30 +1,29 @@
 """Generate test cases from OpenAPI endpoint definitions."""
 
+from __future__ import annotations
+
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
-import os
-import re
-import requests
 import jsonschema
+import requests
 
-
-_ENV_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+_ENV_RE: re.Pattern = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 
 
 def resolve_env(value: str) -> str:
     """Replace ${VAR} or $VAR with environment variable values."""
-    def _replacer(m):
-        name = m.group(1) or m.group(2)
+    def _replacer(m: re.Match) -> str:
+        name: str = m.group(1) or m.group(2)
         return os.environ.get(name, "")
-
     return _ENV_RE.sub(_replacer, value)
 
 
 def resolve_env_in_dict(data: dict) -> dict:
     """Recursively resolve env vars in dict values."""
-    result = {}
+    result: dict = {}
     for key, value in data.items():
         if isinstance(value, str):
             result[key] = resolve_env(value)
@@ -44,7 +43,6 @@ def resolve_env_in_dict(data: dict) -> dict:
 @dataclass
 class TestCase:
     """A single API test case that can execute itself."""
-
     name: str
     method: str
     path: str
@@ -58,14 +56,14 @@ class TestCase:
     response_schema: dict | None = None
     verify_ssl: bool = True
 
-    def execute(self, timeout: int = 10) -> dict:
+    def execute(self, timeout: int = 10) -> dict[str, Any]:
         """Run this test case and return a result dict with passed/messages."""
-        resolved_path = self.path
+        resolved_path: str = self.path
         for key, value in self.path_params.items():
             resolved_path = resolved_path.replace("{" + key + "}", str(value))
 
-        url = self.base_url.rstrip("/") + resolved_path
-        result = {
+        url: str = self.base_url.rstrip("/") + resolved_path
+        result: dict[str, Any] = {
             "name": self.name,
             "passed": False,
             "status_code": None,
@@ -75,34 +73,27 @@ class TestCase:
         }
 
         try:
-            response = requests.request(
-                method=self.method,
-                url=url,
-                params=self.params,
-                json=self.body,
-                headers=self.headers,
-                timeout=timeout,
-                verify=self.verify_ssl,
+            response: requests.Response = requests.request(
+                method=self.method, url=url, params=self.params,
+                json=self.body, headers=self.headers,
+                timeout=timeout, verify=self.verify_ssl,
             )
             result["status_code"] = response.status_code
             result["response_time_ms"] = round(response.elapsed.total_seconds() * 1000)
 
             if response.status_code == self.expected_status:
-                result["messages"].append("[PASS] Status: {} (expected {})".format(
-                    response.status_code, self.expected_status))
+                result["messages"].append(f"[PASS] Status: {response.status_code} (expected {self.expected_status})")
             else:
-                result["messages"].append("[FAIL] Status: {} (expected {})".format(
-                    response.status_code, self.expected_status))
+                result["messages"].append(f"[FAIL] Status: {response.status_code} (expected {self.expected_status})")
 
-            if result["response_time_ms"] > 2000:
-                result["messages"].append(
-                    "[WARN] Slow response: {}ms".format(result["response_time_ms"]))
+            rt: int = result["response_time_ms"]
+            if rt > 2000:
+                result["messages"].append(f"[WARN] Slow response: {rt}ms")
             else:
-                result["messages"].append(
-                    "[PASS] Response time: {}ms".format(result["response_time_ms"]))
+                result["messages"].append(f"[PASS] Response time: {rt}ms")
 
             if self.expected_content_type:
-                ct = response.headers.get("Content-Type", "")
+                ct: str = response.headers.get("Content-Type", "")
                 if self.expected_content_type in ct:
                     result["messages"].append("[PASS] Content-Type: " + ct)
                 else:
@@ -110,55 +101,49 @@ class TestCase:
 
             if self.response_schema:
                 try:
-                    body = response.json()
+                    body: dict = response.json()
                     jsonschema.validate(instance=body, schema=self.response_schema)
                     result["messages"].append("[PASS] Response body matches schema")
                 except jsonschema.ValidationError as e:
-                    result["messages"].append(
-                        "[FAIL] Schema: " + str(e.message)[:100])
+                    result["messages"].append("[FAIL] Schema: " + str(e.message)[:100])
                 except ValueError:
                     result["messages"].append("[WARN] Not valid JSON, schema check skipped")
 
-            # 5. Max response time threshold
-            max_ms = getattr(self, "_max_response_ms", None)
+            max_ms: int | None = getattr(self, "_max_response_ms", None)
             if max_ms and result["response_time_ms"] > max_ms:
-                result["messages"].append(
-                    "[FAIL] Response time: {}ms > {}ms threshold".format(
-                        result["response_time_ms"], max_ms))
+                result["messages"].append(f"[FAIL] Response time: {result['response_time_ms']}ms > {max_ms}ms threshold")
 
-            # 6. JSONPath assertions
-            jsonpath_asserts = getattr(self, "_jsonpath_asserts", [])
+            jsonpath_asserts: list = getattr(self, "_jsonpath_asserts", [])
             if jsonpath_asserts:
                 try:
                     body = response.json()
                     for jp_path, jp_expected in jsonpath_asserts:
                         from .plugin import _resolve_jsonpath
                         actual = _resolve_jsonpath(body, jp_path)
-                        actual_str = str(actual)
+                        actual_str: str = str(actual)
                         if jp_expected in actual_str or jp_expected == actual_str:
-                            result["messages"].append(
-                                "[PASS] JSONPath {} = {}".format(jp_path, actual_str)[:80])
+                            result["messages"].append(f"[PASS] JSONPath {jp_path} = {actual_str}"[:80])
                         else:
                             result["messages"].append(
-                                "[FAIL] JSONPath {} expected '{}', got '{}'".format(
-                                    jp_path, jp_expected, actual_str)[:120])
+                                f"[FAIL] JSONPath {jp_path} expected '{jp_expected}', got '{actual_str}'"[:120])
                 except ValueError:
                     result["messages"].append("[WARN] Not valid JSON, JSONPath check skipped")
 
-            # 7. Snapshot testing
-            snap_dir = getattr(self, "_snapshot_dir", None)
+            snap_dir: str | None = getattr(self, "_snapshot_dir", None)
             if snap_dir:
                 try:
                     body = response.json()
-                    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", self.name)
-                    snap_path = os.path.join(snap_dir, safe_name + ".json")
+                    safe_name: str = re.sub(r"[^a-zA-Z0-9_-]", "_", self.name)
+                    snap_path: str = os.path.join(snap_dir, safe_name + ".json")
                     from .plugin import _snapshot_test
+                    snap_ok: bool
+                    snap_msg: str
                     snap_ok, snap_msg = _snapshot_test(body, snap_path)
                     result["messages"].append(snap_msg)
                 except ValueError:
                     result["messages"].append("[WARN] Not valid JSON, snapshot skipped")
 
-            failures = [m for m in result["messages"] if m.startswith("[FAIL]")]
+            failures: list[str] = [m for m in result["messages"] if m.startswith("[FAIL]")]
             result["passed"] = len(failures) == 0
 
         except requests.exceptions.Timeout:
@@ -177,22 +162,22 @@ class TestCase:
 class TestGenerator:
     """Generates test cases from OpenAPI spec endpoints."""
 
-    def __init__(self, base_url: str, endpoints: list, default_headers: dict | None = None):
-        self.base_url = base_url.rstrip("/")
-        self.endpoints = endpoints
-        self.default_headers = default_headers or {}
+    def __init__(self, base_url: str, endpoints: list[dict], default_headers: dict | None = None) -> None:
+        self.base_url: str = base_url.rstrip("/")
+        self.endpoints: list[dict] = endpoints
+        self.default_headers: dict = default_headers or {}
 
     def generate(self) -> list[TestCase]:
-        test_cases = []
+        test_cases: list[TestCase] = []
 
         for endpoint in self.endpoints:
-            method = endpoint["method"]
-            path = endpoint["path"]
-            operation_id = endpoint["operation_id"] or f"{method}{path}"
+            method: str = endpoint["method"]
+            path: str = endpoint["path"]
+            operation_id: str = endpoint["operation_id"] or f"{method}{path}"
 
-            expected_status = 200
-            response_schema = None
-            responses = endpoint.get("responses", {})
+            expected_status: int = 200
+            response_schema: dict | None = None
+            responses: dict = endpoint.get("responses", {})
             for status_code in responses:
                 if status_code.startswith("2"):
                     expected_status = int(status_code)
@@ -202,60 +187,46 @@ class TestGenerator:
                     response_schema = json_content.get("schema")
                     break
 
-            params = {}
-            path_params = {}
+            params: dict = {}
+            path_params: dict = {}
             for param in endpoint.get("parameters", []):
                 if param.get("in") == "query" and param.get("required"):
                     params[param["name"]] = self._sample_value(param)
                 elif param.get("in") == "path":
                     path_params[param["name"]] = self._sample_value(param)
 
-            body = None
-            request_body = endpoint.get("request_body")
+            body: dict | None = None
+            request_body: dict | None = endpoint.get("request_body")
             if request_body and method in ("POST", "PUT", "PATCH"):
                 content = request_body.get("content", {})
                 if "application/json" in content:
-                    schema = content["application/json"].get("schema", {})
+                    schema: dict = content["application/json"].get("schema", {})
                     body = self._generate_body(schema)
 
             test_cases.append(TestCase(
-                name=operation_id,
-                method=method,
-                path=path,
-                base_url=self.base_url,
-                params=params,
-                path_params=path_params,
-                body=body,
-                headers=dict(self.default_headers),
-                expected_status=expected_status,
-                response_schema=response_schema,
+                name=operation_id, method=method, path=path,
+                base_url=self.base_url, params=params, path_params=path_params,
+                body=body, headers=dict(self.default_headers),
+                expected_status=expected_status, response_schema=response_schema,
             ))
 
         return test_cases
 
-    def _sample_value(self, param: dict):
-        schema = param.get("schema", {})
-        stype = schema.get("type", "string")
-        if stype == "integer":
-            return 1
-        elif stype == "boolean":
-            return "true"
+    def _sample_value(self, param: dict) -> str | int:
+        schema: dict = param.get("schema", {})
+        stype: str = schema.get("type", "string")
+        if stype == "integer": return 1
+        elif stype == "boolean": return "true"
         return "sample"
 
     def _generate_body(self, schema: dict) -> dict:
         if not schema or "properties" not in schema:
             return {}
-
-        body = {}
-        required_fields = schema.get("required", [])
-        for field_name in required_fields:
-            prop = schema["properties"].get(field_name, {})
-            ptype = prop.get("type", "string")
-            if ptype == "integer":
-                body[field_name] = 1
-            elif ptype == "string":
-                body[field_name] = f"sample_{field_name}"
-            elif ptype == "boolean":
-                body[field_name] = False
-
+        body: dict = {}
+        for field_name in schema.get("required", []):
+            prop: dict = schema["properties"].get(field_name, {})
+            ptype: str = prop.get("type", "string")
+            if ptype == "integer": body[field_name] = 1
+            elif ptype == "string": body[field_name] = f"sample_{field_name}"
+            elif ptype == "boolean": body[field_name] = False
         return body
