@@ -2,6 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![pytest](https://img.shields.io/badge/pytest-plugin-orange.svg)](https://docs.pytest.org/)
+[![CI](https://github.com/dongjiaxi-cxk/pytest-api-contract/actions/workflows/tests.yml/badge.svg)](https://github.com/dongjiaxi-cxk/pytest-api-contract/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen.svg)](tests/)
 [![PyPI](https://img.shields.io/badge/pypi-v0.3.0-blue.svg)](https://pypi.org/project/pytest-api-contract/)
